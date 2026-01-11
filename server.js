@@ -17,8 +17,11 @@ const { sendTicketEmail } = require('./email');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+/* ================= TRUST PROXY (RENDER REQUIRED) ================= */
+app.set("trust proxy", 1);
+
 /* ================= RAZORPAY ================= */
-new Razorpay({
+const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID,
   key_secret: process.env.RAZORPAY_KEY_SECRET,
 });
@@ -26,7 +29,7 @@ new Razorpay({
 /* ================= MIDDLEWARE ================= */
 app.use(
   cors({
-    origin: 'http://localhost:8080', // Ensure this matches your frontend port
+    origin: true,          // allow frontend on Render
     credentials: true,
   })
 );
@@ -39,14 +42,13 @@ app.use(
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: false,       // Set to true if using HTTPS
+      secure: true,        // REQUIRED for HTTPS (Render)
       httpOnly: true,
-      sameSite: 'lax',     
+      sameSite: "none",    // REQUIRED for cross-site cookies
       maxAge: 1000 * 60 * 60, // 1 hour
     },
   })
 );
-
 
 /* =====================================================
    AUTHENTICATION & LOGIN
@@ -54,7 +56,6 @@ app.use(
 
 /**
  * 🔑 AUTH CHECK
- * Critical for frontend ProtectedRoute to verify session on refresh
  */
 app.get("/api/auth/me", (req, res) => {
   if (req.session && req.session.user) {
@@ -65,12 +66,14 @@ app.get("/api/auth/me", (req, res) => {
 
 /**
  * 🚪 ADMIN LOGIN
- * Validates credentials against .env variables
  */
 app.post('/api/login', (req, res) => {
   const { username, password } = req.body;
 
-  if (username === process.env.ADMIN_USERNAME && password === process.env.ADMIN_PASSWORD) {
+  if (
+    username === process.env.ADMIN_USERNAME &&
+    password === process.env.ADMIN_PASSWORD
+  ) {
     req.session.user = { id: 'admin', role: 'admin' };
     return res.json({ success: true, user: req.session.user });
   }
@@ -83,34 +86,26 @@ app.post('/api/login', (req, res) => {
  */
 app.post("/api/logout", (req, res) => {
   req.session.destroy(() => {
-    res.clearCookie("connect.sid");
+    res.clearCookie("connect.sid", { path: "/" });
     res.json({ success: true });
   });
 });
 
-
 /* =====================================================
-   EVENTS (SOURCE OF TRUTH = DATABASE)
+   EVENTS
 ===================================================== */
 
-/**
- * 📥 GET ALL EVENTS
- * Fetches data for the public and admin events pages
- */
 app.get("/api/events", async (req, res) => {
   try {
     const db = getDb();
     const events = await db.collection('events').find({}).toArray();
-    res.json({ success: true, events: events }); 
+    res.json({ success: true, events });
   } catch (err) {
     console.error("FETCH EVENTS ERROR:", err);
-    res.status(500).json({ success: false, message: "Failed to fetch events" });
+    res.status(500).json({ success: false });
   }
 });
 
-/**
- * ➕ CREATE EVENT
- */
 app.post('/api/events', requireAdminLogin, async (req, res) => {
   try {
     const db = getDb();
@@ -128,9 +123,6 @@ app.post('/api/events', requireAdminLogin, async (req, res) => {
   }
 });
 
-/**
- * ✏️ UPDATE EVENT
- */
 app.put('/api/events/:id', requireAdminLogin, async (req, res) => {
   try {
     const db = getDb();
@@ -144,9 +136,6 @@ app.put('/api/events/:id', requireAdminLogin, async (req, res) => {
   }
 });
 
-/**
- * 🗑️ DELETE EVENT
- */
 app.delete('/api/events/:id', requireAdminLogin, async (req, res) => {
   try {
     const db = getDb();
@@ -198,7 +187,7 @@ app.post('/api/verify-payment', async (req, res) => {
 });
 
 /* =====================================================
-   REGISTRATIONS (ADMIN PAGE)
+   REGISTRATIONS
 ===================================================== */
 app.get('/api/registrations', requireAdminLogin, async (req, res) => {
   try {
