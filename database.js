@@ -5,7 +5,7 @@ const uri = process.env.MONGODB_URI;
 
 // Check if URI exists before trying to connect
 if (!uri) {
-  console.error("❌ ERROR: MONGODB_URI is not defined in your .env file.");
+  console.error("❌ ERROR: MONGODBURI is not defined in your .env file.");
 }
 
 let db;
