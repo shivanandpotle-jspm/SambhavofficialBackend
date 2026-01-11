@@ -3,7 +3,6 @@ const QRCode = require('qrcode');
 const { PDFDocument, rgb, StandardFonts } = require('pdf-lib');
 require('dotenv').config();
 
-// Set the SendGrid API key from your .env file
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
 async function createTicketPDF(booking) {
@@ -11,30 +10,30 @@ async function createTicketPDF(booking) {
     const page = pdfDoc.addPage([595, 842]);
     const { width, height } = page.getSize();
     
-    // Embed standard fonts for the PDF
-    const poppinsFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    const poppinsBoldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-    // Generate the QR Code based on the unique Ticket ID
-    const qrCodeDataURL = await QRCode.toDataURL(booking.id);
+    // Convert all fields to strings to avoid undefined errors
+    const ticketId = String(booking.id || "N/A");
+    const eventName = String(booking.event || "Event");
+    const name = String(booking.primary_name || "Guest");
+
+    const qrCodeDataURL = await QRCode.toDataURL(ticketId);
     const qrImageBytes = Buffer.from(qrCodeDataURL.split(',')[1], 'base64');
     const qrImage = await pdfDoc.embedPng(qrImageBytes);
     
-    // Draw Ticket Header
-    page.drawText('Event Ticket', { x: 50, y: height - 70, font: poppinsBoldFont, size: 36, color: rgb(0.1, 0.1, 0.1) });
-    page.drawText('Sambhav Club', { x: 50, y: height - 100, font: poppinsFont, size: 18, color: rgb(0.3, 0.3, 0.3) });
+    page.drawText('Event Ticket', { x: 50, y: height - 70, font: boldFont, size: 36 });
+    page.drawText('Sambhav Club', { x: 50, y: height - 100, font: font, size: 18 });
     page.drawImage(qrImage, { x: width - 200, y: height - 220, width: 150, height: 150 });
 
-    // Draw Event and Attendee Details
-    const startY = height - 180;
-    page.drawText('EVENT:', { x: 50, y: startY, font: poppinsBoldFont, size: 12 });
-    page.drawText(booking.event, { x: 50, y: startY - 20, font: poppinsFont, size: 16 });
+    page.drawText('EVENT:', { x: 50, y: height - 180, font: boldFont, size: 12 });
+    page.drawText(eventName, { x: 50, y: height - 200, font: font, size: 16 });
     
-    page.drawText('ATTENDEE:', { x: 50, y: startY - 60, font: poppinsBoldFont, size: 12 });
-    page.drawText(booking.primary_name, { x: 50, y: startY - 80, font: poppinsFont, size: 14 });
+    page.drawText('ATTENDEE:', { x: 50, y: height - 240, font: boldFont, size: 12 });
+    page.drawText(name, { x: 50, y: height - 260, font: font, size: 14 });
 
-    page.drawText('TICKET ID:', { x: 50, y: startY - 120, font: poppinsBoldFont, size: 12 });
-    page.drawText(booking.id, { x: 50, y: startY - 140, font: poppinsFont, size: 10 });
+    page.drawText('TICKET ID:', { x: 50, y: height - 300, font: boldFont, size: 12 });
+    page.drawText(ticketId, { x: 50, y: height - 320, font: font, size: 10 });
     
     return await pdfDoc.save();
 }
@@ -42,35 +41,23 @@ async function createTicketPDF(booking) {
 async function sendTicketEmail(booking) {
     try {
         const ticketPdfBytes = await createTicketPDF(booking);
-        const pdfBase64 = Buffer.from(ticketPdfBytes).toString('base64');
-
         const msg = {
             to: booking.email,
-            from: process.env.VERIFIED_SENDER_EMAIL, // Your verified SendGrid sender
+            from: process.env.VERIFIED_SENDER_EMAIL,
             subject: `Your Ticket for ${booking.event}`,
-            html: `
-                <p>Hi ${booking.primary_name},</p>
-                <p>Thank you for registering! Your ticket for <strong>${booking.event}</strong> is attached to this email.</p>
-                <p>Please have the QR code ready for scanning at the event entrance.</p>
-                <br>
-                <p>Best regards,</p>
-                <p><strong>The Sambhav Club Team</strong></p>
-            `,
-            attachments: [
-                {
-                    content: pdfBase64,
-                    filename: `ticket-${booking.id}.pdf`,
-                    type: 'application/pdf',
-                    disposition: 'attachment',
-                },
-            ],
+            html: `<p>Hi ${booking.primary_name},</p><p>Your ticket for ${booking.event} is attached.</p>`,
+            attachments: [{
+                content: Buffer.from(ticketPdfBytes).toString('base64'),
+                filename: `ticket-${booking.id}.pdf`,
+                type: 'application/pdf',
+                disposition: 'attachment',
+            }],
         };
-
         await sgMail.send(msg);
-        console.log(`✅ Email sent successfully to ${booking.email}`);
+        console.log(`✅ Ticket emailed to ${booking.email}`);
     } catch (error) {
-        console.error(`❌ Failed to send email to ${booking.email}:`, error);
-        throw new Error('Failed to send ticket email.');
+        console.error(`❌ Email failed:`, error);
+        throw error;
     }
 }
 
