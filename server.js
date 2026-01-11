@@ -26,7 +26,7 @@ new Razorpay({
 /* ================= MIDDLEWARE ================= */
 app.use(
   cors({
-    origin: 'http://localhost:8080',
+    origin: 'http://localhost:8080', // Ensure this matches your frontend port
     credentials: true,
   })
 );
@@ -39,29 +39,48 @@ app.use(
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: false,       // localhost = false
+      secure: false,       // Set to true if using HTTPS
       httpOnly: true,
-      sameSite: 'lax',     // ⭐ THIS IS THE KEY
-      maxAge: 1000 * 60 * 60,
+      sameSite: 'lax',     
+      maxAge: 1000 * 60 * 60, // 1 hour
     },
   })
 );
 
 
-/* ================= ADMIN LOGIN ================= */
-app.post('/api/login', (req, res) => {
-  // you can add username/password check later
-  req.session.user = {
-    id: 'admin',
-    role: 'admin',
-  };
+/* =====================================================
+   AUTHENTICATION & LOGIN
+===================================================== */
 
-  res.json({
-    success: true,
-    user: req.session.user,
-  });
+/**
+ * 🔑 AUTH CHECK
+ * Critical for frontend ProtectedRoute to verify session on refresh
+ */
+app.get("/api/auth/me", (req, res) => {
+  if (req.session && req.session.user) {
+    return res.json({ authenticated: true, user: req.session.user });
+  }
+  res.status(401).json({ authenticated: false });
 });
 
+/**
+ * 🚪 ADMIN LOGIN
+ * Validates credentials against .env variables
+ */
+app.post('/api/login', (req, res) => {
+  const { username, password } = req.body;
+
+  if (username === process.env.ADMIN_USERNAME && password === process.env.ADMIN_PASSWORD) {
+    req.session.user = { id: 'admin', role: 'admin' };
+    return res.json({ success: true, user: req.session.user });
+  }
+
+  res.status(401).json({ success: false, message: "Invalid credentials" });
+});
+
+/**
+ * 🏃 ADMIN LOGOUT
+ */
 app.post("/api/logout", (req, res) => {
   req.session.destroy(() => {
     res.clearCookie("connect.sid");
@@ -74,8 +93,25 @@ app.post("/api/logout", (req, res) => {
    EVENTS (SOURCE OF TRUTH = DATABASE)
 ===================================================== */
 
-/* ➕ CREATE EVENT */
-app.post('/api/events', async (req, res) => {
+/**
+ * 📥 GET ALL EVENTS
+ * Fetches data for the public and admin events pages
+ */
+app.get("/api/events", async (req, res) => {
+  try {
+    const db = getDb();
+    const events = await db.collection('events').find({}).toArray();
+    res.json({ success: true, events: events }); 
+  } catch (err) {
+    console.error("FETCH EVENTS ERROR:", err);
+    res.status(500).json({ success: false, message: "Failed to fetch events" });
+  }
+});
+
+/**
+ * ➕ CREATE EVENT
+ */
+app.post('/api/events', requireAdminLogin, async (req, res) => {
   try {
     const db = getDb();
     const event = {
@@ -92,17 +128,10 @@ app.post('/api/events', async (req, res) => {
   }
 });
 
-/* 📥 GET ALL EVENTS */
-app.get("/api/auth/me", (req, res) => {
-  if (req.session && req.session.user) {
-    return res.json({ authenticated: true, user: req.session.user });
-  }
-  res.status(401).json({ authenticated: false });
-});
-
-
-/* ✏️ UPDATE EVENT */
-app.put('/api/events/:id',requireAdminLogin, async (req, res) => {
+/**
+ * ✏️ UPDATE EVENT
+ */
+app.put('/api/events/:id', requireAdminLogin, async (req, res) => {
   try {
     const db = getDb();
     await db.collection('events').updateOne(
@@ -115,8 +144,10 @@ app.put('/api/events/:id',requireAdminLogin, async (req, res) => {
   }
 });
 
-/* 🗑️ DELETE EVENT */
-app.delete('/api/events/:id',requireAdminLogin, async (req, res) => {
+/**
+ * 🗑️ DELETE EVENT
+ */
+app.delete('/api/events/:id', requireAdminLogin, async (req, res) => {
   try {
     const db = getDb();
     await db.collection('events').deleteOne({ id: req.params.id });
@@ -169,7 +200,7 @@ app.post('/api/verify-payment', async (req, res) => {
 /* =====================================================
    REGISTRATIONS (ADMIN PAGE)
 ===================================================== */
-app.get('/api/registrations',requireAdminLogin, async (req, res) => {
+app.get('/api/registrations', requireAdminLogin, async (req, res) => {
   try {
     const db = getDb();
     const tickets = await db
@@ -185,9 +216,9 @@ app.get('/api/registrations',requireAdminLogin, async (req, res) => {
 });
 
 /* =====================================================
-   QR SCANNING (NO LOGIN REQUIRED)
+   QR SCANNING
 ===================================================== */
-app.post('/api/validate-ticket/:id',requireAdminLogin, async (req, res) => {
+app.post('/api/validate-ticket/:id', requireAdminLogin, async (req, res) => {
   try {
     const db = getDb();
     const { id } = req.params;
