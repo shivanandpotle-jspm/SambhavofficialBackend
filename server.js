@@ -10,6 +10,7 @@ const Razorpay = require('razorpay');
 const cors = require('cors');
 
 const { connectToDatabase, getDb } = require('./database');
+const { requireAdminLogin } = require('./auth');
 const { sendTicketEmail } = require('./email');
 
 /* ================= APP ================= */
@@ -38,18 +39,36 @@ app.use(
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: false,
+      secure: false,       // localhost = false
       httpOnly: true,
+      sameSite: 'lax',     // ⭐ THIS IS THE KEY
       maxAge: 1000 * 60 * 60,
     },
   })
 );
 
+
 /* ================= ADMIN LOGIN ================= */
 app.post('/api/login', (req, res) => {
-  req.session.userId = 'admin';
-  res.json({ success: true });
+  // you can add username/password check later
+  req.session.user = {
+    id: 'admin',
+    role: 'admin',
+  };
+
+  res.json({
+    success: true,
+    user: req.session.user,
+  });
 });
+
+app.post("/api/logout", (req, res) => {
+  req.session.destroy(() => {
+    res.clearCookie("connect.sid");
+    res.json({ success: true });
+  });
+});
+
 
 /* =====================================================
    EVENTS (SOURCE OF TRUTH = DATABASE)
@@ -74,23 +93,16 @@ app.post('/api/events', async (req, res) => {
 });
 
 /* 📥 GET ALL EVENTS */
-app.get('/api/events', async (req, res) => {
-  try {
-    const db = getDb();
-    const events = await db
-      .collection('events')
-      .find({})
-      .sort({ createdAt: -1 })
-      .toArray();
-
-    res.json({ success: true, events });
-  } catch (err) {
-    res.status(500).json({ success: false });
+app.get("/api/auth/me", (req, res) => {
+  if (req.session && req.session.user) {
+    return res.json({ authenticated: true, user: req.session.user });
   }
+  res.status(401).json({ authenticated: false });
 });
 
+
 /* ✏️ UPDATE EVENT */
-app.put('/api/events/:id', async (req, res) => {
+app.put('/api/events/:id',requireAdminLogin, async (req, res) => {
   try {
     const db = getDb();
     await db.collection('events').updateOne(
@@ -104,7 +116,7 @@ app.put('/api/events/:id', async (req, res) => {
 });
 
 /* 🗑️ DELETE EVENT */
-app.delete('/api/events/:id', async (req, res) => {
+app.delete('/api/events/:id',requireAdminLogin, async (req, res) => {
   try {
     const db = getDb();
     await db.collection('events').deleteOne({ id: req.params.id });
@@ -157,7 +169,7 @@ app.post('/api/verify-payment', async (req, res) => {
 /* =====================================================
    REGISTRATIONS (ADMIN PAGE)
 ===================================================== */
-app.get('/api/registrations', async (req, res) => {
+app.get('/api/registrations',requireAdminLogin, async (req, res) => {
   try {
     const db = getDb();
     const tickets = await db
@@ -175,7 +187,7 @@ app.get('/api/registrations', async (req, res) => {
 /* =====================================================
    QR SCANNING (NO LOGIN REQUIRED)
 ===================================================== */
-app.post('/api/validate-ticket/:id', async (req, res) => {
+app.post('/api/validate-ticket/:id',requireAdminLogin, async (req, res) => {
   try {
     const db = getDb();
     const { id } = req.params;
