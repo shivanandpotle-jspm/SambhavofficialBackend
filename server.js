@@ -15,7 +15,7 @@ new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET,
 });
 
-app.use(cors({ origin: 'http://localhost:8080', credentials: true }));
+app.use(cors({ origin: 'http://localhost:8080' || 'https://sambhav-official-frontend.vercel.app/', credentials: true }));
 app.use(express.json());
 app.use(session({
   secret: process.env.SESSION_SECRET,
@@ -151,3 +151,4 @@ app.get('/api/registrations', requireAdminLogin, async (req, res) => {
 connectToDatabase().then(() => {
   app.listen(PORT, () => console.log(`🚀 Backend running on port ${PORT}`));
 });
+
