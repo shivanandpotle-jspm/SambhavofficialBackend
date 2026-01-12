@@ -15,13 +15,40 @@ new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET,
 });
 
-app.use(cors({ origin: 'http://localhost:8080' || 'https://sambhav-frontend.onrender.com', credentials: true }));
+// 1. FIXED CORS: Use an array to allow both local development and production URLs
+const allowedOrigins = [
+  'http://localhost:8080',
+  'https://sambhav-frontend.onrender.com'
+];
+
+app.use(cors({ 
+  origin: function (origin, callback) {
+    // allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) === -1) {
+      return callback(new Error('CORS block: This origin is not allowed'), false);
+    }
+    return callback(null, true);
+  }, 
+  credentials: true 
+}));
+
 app.use(express.json());
+
+// 2. FIXED SESSION: Required for Render's HTTPS and Proxy setup
+app.set('trust proxy', 1); // Crucial for session cookies to work on Render
+
 app.use(session({
   secret: process.env.SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
-  cookie: { secure: false, httpOnly: true, sameSite: 'lax', maxAge: 1000 * 60 * 60 }
+  proxy: true, // Required because Render uses a load balancer/proxy
+  cookie: { 
+    secure: true,      // Must be true for HTTPS (Render/Vercel)
+    httpOnly: true, 
+    sameSite: 'none',  // Required for cross-site cookies between different domains
+    maxAge: 1000 * 60 * 60 
+  }
 }));
 
 /* ================= AUTH ROUTES ================= */
@@ -151,5 +178,3 @@ app.get('/api/registrations', requireAdminLogin, async (req, res) => {
 connectToDatabase().then(() => {
   app.listen(PORT, () => console.log(`🚀 Backend running on port ${PORT}`));
 });
-
-
