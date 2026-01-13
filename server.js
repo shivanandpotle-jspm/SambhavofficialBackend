@@ -18,6 +18,7 @@ new Razorpay({
 // 1. FIXED CORS: Use an array to allow both local development and production URLs
 const allowedOrigins = [
   'http://localhost:8080',
+  'https://sambhavofficial.in'
   'https://sambhav-frontend.onrender.com'
 ];
 
@@ -178,3 +179,4 @@ app.get('/api/registrations', requireAdminLogin, async (req, res) => {
 connectToDatabase().then(() => {
   app.listen(PORT, () => console.log(`🚀 Backend running on port ${PORT}`));
 });
+
