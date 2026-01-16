@@ -2,8 +2,9 @@ require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
 const Razorpay = require('razorpay');
-const crypto = require('crypto'); // ✅ NEW
+const crypto = require('crypto');
 const cors = require('cors');
+const path = require('path');
 
 const { connectToDatabase, getDb } = require('./database');
 const { requireAdminLogin } = require('./auth');
@@ -12,14 +13,13 @@ const { sendTicketEmail } = require('./email');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-/* ================= RAZORPAY INSTANCE (FIXED) ================= */
-// ❗ Previously instance was created but not stored
+/* ================= RAZORPAY ================= */
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID,
   key_secret: process.env.RAZORPAY_KEY_SECRET,
 });
 
-/* ================= CORS (UNCHANGED) ================= */
+/* ================= CORS ================= */
 const allowedOrigins = [
   'http://localhost:8080',
   'https://sambhavofficial.in',
@@ -27,20 +27,20 @@ const allowedOrigins = [
   'https://sambhav-frontend.onrender.com'
 ];
 
-app.use(cors({ 
+app.use(cors({
   origin: function (origin, callback) {
     if (!origin) return callback(null, true);
     if (!allowedOrigins.includes(origin)) {
-      return callback(new Error('CORS block'), false);
+      return callback(new Error('CORS blocked'), false);
     }
     return callback(null, true);
-  }, 
-  credentials: true 
+  },
+  credentials: true
 }));
 
 app.use(express.json());
 
-/* ================= SESSION (UNCHANGED) ================= */
+/* ================= SESSION ================= */
 app.set('trust proxy', 1);
 
 app.use(session({
@@ -48,43 +48,108 @@ app.use(session({
   resave: false,
   saveUninitialized: false,
   proxy: true,
-  cookie: { 
+  cookie: {
     secure: true,
-    httpOnly: true, 
+    httpOnly: true,
     sameSite: 'none',
-    maxAge: 1000 * 60 * 60 
+    maxAge: 1000 * 60 * 60
   }
 }));
 
-/* ================= AUTH ROUTES (UNCHANGED) ================= */
-// ... (NO CHANGES)
+/* ================= AUTH ROUTES ================= */
+app.get("/api/auth/me", (req, res) => {
+  if (req.session && req.session.user) {
+    return res.json({ authenticated: true, user: req.session.user });
+  }
+  res.status(401).json({ authenticated: false });
+});
 
-/* ================= EVENT ROUTES (UNCHANGED) ================= */
-// ... (NO CHANGES)
+app.post('/api/login', (req, res) => {
+  const { username, password } = req.body;
+  if (
+    username === process.env.ADMIN_USERNAME &&
+    password === process.env.ADMIN_PASSWORD
+  ) {
+    req.session.user = { id: 'admin', role: 'admin' };
+    return res.json({ success: true, user: req.session.user });
+  }
+  res.status(401).json({ success: false, message: "Invalid credentials" });
+});
 
-/* ============================================================
-   ✅ NEW: CREATE ORDER API (REQUIRED FOR VERIFICATION)
-   ============================================================ */
+app.post("/api/logout", (req, res) => {
+  req.session.destroy(() => {
+    res.clearCookie("connect.sid");
+    res.json({ success: true });
+  });
+});
+
+/* ================= EVENT ROUTES ================= */
+app.get("/api/events", async (req, res) => {
+  try {
+    const db = getDb();
+    const events = await db.collection('events').find({}).toArray();
+    res.json({ success: true, events });
+  } catch {
+    res.status(500).json({ success: false });
+  }
+});
+
+app.post('/api/events', requireAdminLogin, async (req, res) => {
+  try {
+    const db = getDb();
+    const event = { ...req.body, createdAt: new Date(), status: 'upcoming' };
+    await db.collection('events').insertOne(event);
+    res.json({ success: true, event });
+  } catch {
+    res.status(500).json({ success: false });
+  }
+});
+
+app.put('/api/events/:id', requireAdminLogin, async (req, res) => {
+  try {
+    const db = getDb();
+    const { _id, ...updateData } = req.body;
+    const result = await db.collection('events').updateOne(
+      { id: req.params.id },
+      { $set: updateData }
+    );
+    res.json({ success: result.matchedCount > 0 });
+  } catch {
+    res.status(500).json({ success: false });
+  }
+});
+
+app.delete('/api/events/:id', requireAdminLogin, async (req, res) => {
+  try {
+    const db = getDb();
+    await db.collection('events').deleteOne({ id: req.params.id });
+    res.json({ success: true });
+  } catch {
+    res.status(500).json({ success: false });
+  }
+});
+
+/* ================= PAYMENT ================= */
+
+/* CREATE ORDER */
 app.post('/api/create-order', async (req, res) => {
   try {
     const { amount } = req.body;
 
     const order = await razorpay.orders.create({
-      amount: amount * 100, // INR → paise
+      amount: amount * 100,
       currency: 'INR',
       receipt: `rcpt_${Date.now()}`
     });
 
     res.json({ success: true, order });
   } catch (err) {
-    console.error('Order creation error:', err);
+    console.error("Order error:", err);
     res.status(500).json({ success: false });
   }
 });
 
-/* ============================================================
-   ✅ FIXED: PAYMENT VERIFICATION (ONLY LOGIC CHANGE)
-   ============================================================ */
+/* VERIFY PAYMENT */
 app.post('/api/verify-payment', async (req, res) => {
   try {
     const {
@@ -97,19 +162,17 @@ app.post('/api/verify-payment', async (req, res) => {
       formData
     } = req.body;
 
-    // ✅ STEP 1: VERIFY SIGNATURE
     const body = razorpay_order_id + "|" + razorpay_payment_id;
 
     const expectedSignature = crypto
-      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+      .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
       .update(body)
-      .digest('hex');
+      .digest("hex");
 
     if (expectedSignature !== razorpay_signature) {
-      return res.status(400).json({ success: false, message: 'Invalid payment' });
+      return res.status(400).json({ success: false, message: "Invalid payment" });
     }
 
-    // ✅ STEP 2: PAYMENT VERIFIED — NOW ISSUE TICKET
     const db = getDb();
     const ticketId = `TICKET-${Date.now()}`;
     const timestamp = new Date();
@@ -135,34 +198,45 @@ app.post('/api/verify-payment', async (req, res) => {
       submittedAt: timestamp
     });
 
-    // ✅ STEP 3: SEND EMAIL AFTER VERIFICATION
     sendTicketEmail({
       id: ticketId,
       event: eventTitle,
       primary_name: name,
       email
-    }).catch(err => console.error('Email error:', err));
+    }).catch(console.error);
 
     res.json({ success: true, ticketId });
 
   } catch (err) {
-    console.error('Verify payment error:', err);
+    console.error("Verify error:", err);
     res.status(500).json({ success: false });
   }
 });
 
-/* ================= ADMIN REGISTRATIONS (UNCHANGED) ================= */
+/* ================= ADMIN ================= */
 app.get('/api/registrations', requireAdminLogin, async (req, res) => {
   try {
     const db = getDb();
-    const tickets = await db.collection('tickets').find({}).sort({ createdAt: -1 }).toArray();
+    const tickets = await db.collection('tickets')
+      .find({})
+      .sort({ createdAt: -1 })
+      .toArray();
     res.json({ success: true, data: tickets });
-  } catch (err) {
+  } catch {
     res.status(500).json({ success: false });
   }
 });
 
-/* ================= START SERVER ================= */
+/* ================= REACT SPA ROUTING ================= */
+app.use(express.static(path.join(__dirname, 'build')));
+
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'build', 'index.html'));
+});
+
+/* ================= START ================= */
 connectToDatabase().then(() => {
-  app.listen(PORT, () => console.log(`Backend running on port ${PORT}`));
+  app.listen(PORT, () =>
+    console.log(`🚀 Server running on port ${PORT}`)
+  );
 });
