@@ -19,6 +19,74 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET,
 });
 
+/* ================= WEBHOOK (RAW BODY — MUST BE FIRST) ================= */
+app.post(
+  '/api/webhook/razorpay',
+  express.raw({ type: 'application/json' }),
+  async (req, res) => {
+    try {
+      const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
+      const signature = req.headers['x-razorpay-signature'];
+
+      const expectedSignature = crypto
+        .createHmac('sha256', secret)
+        .update(req.body)
+        .digest('hex');
+
+      if (signature !== expectedSignature) {
+        return res.status(400).send('Invalid signature');
+      }
+
+      const event = JSON.parse(req.body.toString());
+
+      if (event.event === 'payment.captured') {
+        const payment = event.payload.payment.entity;
+        const db = getDb();
+
+        // Prevent duplicate ticket
+        const alreadyIssued = await db.collection('tickets')
+          .findOne({ payment_id: payment.id });
+
+        if (!alreadyIssued) {
+          const pending = await db.collection('pending_payments')
+            .findOne({ razorpay_order_id: payment.order_id });
+
+          if (pending) {
+            const ticketId = `TICKET-${Date.now()}`;
+
+            await db.collection('tickets').insertOne({
+              _id: ticketId,
+              event: pending.eventTitle,
+              primary_name: pending.name,
+              email: pending.email,
+              formData: pending.formData || {},
+              payment_id: payment.id,
+              status_day_1: 'pending',
+              status_day_2: 'pending',
+              createdAt: new Date()
+            });
+
+            await sendTicketEmail({
+              id: ticketId,
+              event: pending.eventTitle,
+              primary_name: pending.name,
+              email: pending.email
+            });
+
+            await db.collection('pending_payments')
+              .deleteOne({ _id: pending._id });
+          }
+        }
+      }
+
+      res.json({ status: 'ok' });
+    } catch (err) {
+      console.error('Webhook error:', err);
+      res.status(500).send('Webhook failure');
+    }
+  }
+);
+
 /* ================= CORS ================= */
 const allowedOrigins = [
   'http://localhost:8080',
@@ -83,52 +151,6 @@ app.post("/api/logout", (req, res) => {
   });
 });
 
-/* ================= EVENT ROUTES ================= */
-app.get("/api/events", async (req, res) => {
-  try {
-    const db = getDb();
-    const events = await db.collection('events').find({}).toArray();
-    res.json({ success: true, events });
-  } catch {
-    res.status(500).json({ success: false });
-  }
-});
-
-app.post('/api/events', requireAdminLogin, async (req, res) => {
-  try {
-    const db = getDb();
-    const event = { ...req.body, createdAt: new Date(), status: 'upcoming' };
-    await db.collection('events').insertOne(event);
-    res.json({ success: true, event });
-  } catch {
-    res.status(500).json({ success: false });
-  }
-});
-
-app.put('/api/events/:id', requireAdminLogin, async (req, res) => {
-  try {
-    const db = getDb();
-    const { _id, ...updateData } = req.body;
-    const result = await db.collection('events').updateOne(
-      { id: req.params.id },
-      { $set: updateData }
-    );
-    res.json({ success: result.matchedCount > 0 });
-  } catch {
-    res.status(500).json({ success: false });
-  }
-});
-
-app.delete('/api/events/:id', requireAdminLogin, async (req, res) => {
-  try {
-    const db = getDb();
-    await db.collection('events').deleteOne({ id: req.params.id });
-    res.json({ success: true });
-  } catch {
-    res.status(500).json({ success: false });
-  }
-});
-
 /* ================= PAYMENT ================= */
 
 /* CREATE ORDER */
@@ -149,7 +171,7 @@ app.post('/api/create-order', async (req, res) => {
   }
 });
 
-/* VERIFY PAYMENT */
+/* VERIFY PAYMENT — NOW ONLY SAVES PENDING */
 app.post('/api/verify-payment', async (req, res) => {
   try {
     const {
@@ -174,38 +196,22 @@ app.post('/api/verify-payment', async (req, res) => {
     }
 
     const db = getDb();
-    const ticketId = `TICKET-${Date.now()}`;
-    const timestamp = new Date();
 
-    await db.collection('tickets').insertOne({
-      _id: ticketId,
-      event: eventTitle,
-      primary_name: name,
+    await db.collection('pending_payments').insertOne({
+      razorpay_order_id,
+      razorpay_payment_id,
+      eventTitle,
+      name,
       email,
       formData: formData || {},
-      payment_id: razorpay_payment_id,
-      status_day_1: 'pending',
-      status_day_2: 'pending',
-      createdAt: timestamp
+      status: 'pending',
+      createdAt: new Date()
     });
 
-    await db.collection('form_responses').insertOne({
-      ticketId,
-      eventTitle,
-      respondentName: name,
-      respondentEmail: email,
-      dynamicAttributes: formData || {},
-      submittedAt: timestamp
+    res.json({
+      success: true,
+      message: 'Payment verified. Ticket will be sent shortly.'
     });
-
-    sendTicketEmail({
-      id: ticketId,
-      event: eventTitle,
-      primary_name: name,
-      email
-    }).catch(console.error);
-
-    res.json({ success: true, ticketId });
 
   } catch (err) {
     console.error("Verify error:", err);
