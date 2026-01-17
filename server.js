@@ -19,7 +19,7 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET,
 });
 
-/* ================= WEBHOOK (RAW BODY — MUST BE FIRST) ================= */
+/* ================= WEBHOOK (RAW BODY) ================= */
 app.post(
   '/api/webhook/razorpay',
   express.raw({ type: 'application/json' }),
@@ -43,7 +43,6 @@ app.post(
         const payment = event.payload.payment.entity;
         const db = getDb();
 
-        // Prevent duplicate ticket
         const alreadyIssued = await db.collection('tickets')
           .findOne({ payment_id: payment.id });
 
@@ -124,36 +123,32 @@ app.use(session({
   }
 }));
 
-/* ================= AUTH ROUTES ================= */
-app.get("/api/auth/me", (req, res) => {
-  if (req.session && req.session.user) {
-    return res.json({ authenticated: true, user: req.session.user });
+/* ================= EVENTS ================= */
+
+/* API EVENTS */
+app.get("/api/events", async (req, res) => {
+  try {
+    const db = getDb();
+    const events = await db.collection('events').find({}).toArray();
+    res.json({ success: true, events });
+  } catch {
+    res.status(500).json({ success: false });
   }
-  res.status(401).json({ authenticated: false });
 });
 
-app.post('/api/login', (req, res) => {
-  const { username, password } = req.body;
-  if (
-    username === process.env.ADMIN_USERNAME &&
-    password === process.env.ADMIN_PASSWORD
-  ) {
-    req.session.user = { id: 'admin', role: 'admin' };
-    return res.json({ success: true, user: req.session.user });
+/* 🔥 FIX: /events NOW WORKS */
+app.get("/events", async (req, res) => {
+  try {
+    const db = getDb();
+    const events = await db.collection('events').find({}).toArray();
+    res.json({ success: true, events });
+  } catch {
+    res.status(500).json({ success: false });
   }
-  res.status(401).json({ success: false, message: "Invalid credentials" });
-});
-
-app.post("/api/logout", (req, res) => {
-  req.session.destroy(() => {
-    res.clearCookie("connect.sid");
-    res.json({ success: true });
-  });
 });
 
 /* ================= PAYMENT ================= */
 
-/* CREATE ORDER */
 app.post('/api/create-order', async (req, res) => {
   try {
     const { amount } = req.body;
@@ -171,7 +166,7 @@ app.post('/api/create-order', async (req, res) => {
   }
 });
 
-/* VERIFY PAYMENT — NOW ONLY SAVES PENDING */
+/* VERIFY PAYMENT → SAVE PENDING */
 app.post('/api/verify-payment', async (req, res) => {
   try {
     const {
@@ -192,7 +187,7 @@ app.post('/api/verify-payment', async (req, res) => {
       .digest("hex");
 
     if (expectedSignature !== razorpay_signature) {
-      return res.status(400).json({ success: false, message: "Invalid payment" });
+      return res.status(400).json({ success: false });
     }
 
     const db = getDb();
@@ -204,36 +199,16 @@ app.post('/api/verify-payment', async (req, res) => {
       name,
       email,
       formData: formData || {},
-      status: 'pending',
       createdAt: new Date()
     });
 
-    res.json({
-      success: true,
-      message: 'Payment verified. Ticket will be sent shortly.'
-    });
-
-  } catch (err) {
-    console.error("Verify error:", err);
-    res.status(500).json({ success: false });
-  }
-});
-
-/* ================= ADMIN ================= */
-app.get('/api/registrations', requireAdminLogin, async (req, res) => {
-  try {
-    const db = getDb();
-    const tickets = await db.collection('tickets')
-      .find({})
-      .sort({ createdAt: -1 })
-      .toArray();
-    res.json({ success: true, data: tickets });
+    res.json({ success: true, message: 'Payment verified. Ticket will be sent shortly.' });
   } catch {
     res.status(500).json({ success: false });
   }
 });
 
-/* ================= REACT SPA ROUTING ================= */
+/* ================= REACT SPA ================= */
 app.use(express.static(path.join(__dirname, 'build')));
 
 app.get('*', (req, res) => {
