@@ -7,6 +7,7 @@ const cors = require('cors');
 const path = require('path');
 
 const { connectToDatabase, getDb } = require('./database');
+const { requireAdminLogin } = require('./auth');
 const { sendTicketEmail } = require('./email');
 
 const app = express();
@@ -18,7 +19,7 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET,
 });
 
-/* ================= WEBHOOK (MUST BE FIRST) ================= */
+/* ================= WEBHOOK (RAW BODY) ================= */
 app.post(
   '/api/webhook/razorpay',
   express.raw({ type: 'application/json' }),
@@ -27,13 +28,12 @@ app.post(
       const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
       const signature = req.headers['x-razorpay-signature'];
 
-      const expected = crypto
+      const expectedSignature = crypto
         .createHmac('sha256', secret)
         .update(req.body)
         .digest('hex');
 
-      if (signature !== expected) {
-        console.error('❌ Invalid webhook signature');
+      if (signature !== expectedSignature) {
         return res.status(400).send('Invalid signature');
       }
 
@@ -43,86 +43,81 @@ app.post(
         const payment = event.payload.payment.entity;
         const db = getDb();
 
-        console.log('🔥 payment.captured:', payment.id);
-
-        // Prevent duplicate tickets
-        const existing = await db
-          .collection('tickets')
+        const alreadyExists = await db.collection('tickets')
           .findOne({ payment_id: payment.id });
 
-        if (existing) {
-          console.log('⚠️ Duplicate ignored:', payment.id);
-          return res.json({ status: 'duplicate' });
+        if (!alreadyExists) {
+          // fallback only (frontend failed)
+          await db.collection('tickets').insertOne({
+            _id: `TICKET-${Date.now()}`,
+            event: 'Unknown (webhook fallback)',
+            primary_name: 'Unknown',
+            email: 'unknown@example.com',
+            payment_id: payment.id,
+            status_day_1: 'pending',
+            status_day_2: 'pending',
+            createdAt: new Date()
+          });
         }
-
-        const ticketId = `TICKET-${Date.now()}`;
-
-        const email =
-          payment.email ||
-          payment.notes?.email;
-
-        const name =
-          payment.notes?.name || 'Participant';
-
-        const eventTitle =
-          payment.notes?.eventTitle || 'Event';
-
-        await db.collection('tickets').insertOne({
-          _id: ticketId,
-          event: eventTitle,
-          primary_name: name,
-          email,
-          payment_id: payment.id,
-          status_day_1: 'pending',
-          status_day_2: 'pending',
-          createdAt: new Date(),
-        });
-
-        await sendTicketEmail({
-          id: ticketId,
-          event: eventTitle,
-          primary_name: name,
-          email,
-        });
-
-        console.log('✅ Ticket sent:', ticketId);
       }
 
       res.json({ status: 'ok' });
     } catch (err) {
-      console.error('❌ Webhook error:', err);
-      res.status(500).send('Webhook error');
+      console.error('Webhook error:', err);
+      res.status(500).send('Webhook failure');
     }
   }
 );
 
-/* ================= MIDDLEWARE ================= */
+/* ================= CORS ================= */
+const allowedOrigins = [
+  'http://localhost:8080',
+  'https://sambhavofficial.in',
+  'https://www.sambhavofficial.in',
+  'https://sambhav-frontend.onrender.com'
+];
+
 app.use(cors({
-  origin: [
-    'http://localhost:8080',
-    'https://sambhavofficial.in',
-    'https://www.sambhavofficial.in',
-    'https://sambhav-frontend.onrender.com',
-  ],
-  credentials: true,
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true);
+    if (!allowedOrigins.includes(origin)) {
+      return callback(new Error('CORS blocked'), false);
+    }
+    return callback(null, true);
+  },
+  credentials: true
 }));
 
 app.use(express.json());
 
 /* ================= SESSION ================= */
 app.set('trust proxy', 1);
+
 app.use(session({
-  secret: process.env.SESSION_SECRET || 'sambhav_secret',
+  secret: process.env.SESSION_SECRET || 'sambhav-session-secret',
   resave: false,
   saveUninitialized: false,
   cookie: {
     secure: true,
+    httpOnly: true,
     sameSite: 'none',
-  },
+    maxAge: 1000 * 60 * 60
+  }
 }));
 
-/* ================= EVENTS ================= */
+/* ================= EVENTS API ================= */
 app.get('/api/events', async (req, res) => {
+  try {
+    const db = getDb();
+    const events = await db.collection('events').find({}).toArray();
+    res.json({ success: true, events });
+  } catch {
+    res.status(500).json({ success: false });
+  }
+});
+
+// ✅ direct access (important for frontend routing)
+app.get('/events', async (req, res) => {
   try {
     const db = getDb();
     const events = await db.collection('events').find({}).toArray();
@@ -135,17 +130,12 @@ app.get('/api/events', async (req, res) => {
 /* ================= CREATE ORDER ================= */
 app.post('/api/create-order', async (req, res) => {
   try {
-    const { amount, name, email, eventTitle } = req.body;
+    const { amount } = req.body;
 
     const order = await razorpay.orders.create({
       amount: amount * 100,
       currency: 'INR',
-      receipt: `rcpt_${Date.now()}`,
-      notes: {
-        name,
-        email,
-        eventTitle,
-      },
+      receipt: `rcpt_${Date.now()}`
     });
 
     res.json({ success: true, order });
@@ -155,7 +145,70 @@ app.post('/api/create-order', async (req, res) => {
   }
 });
 
-/* ================= START ================= */
+/* ================= VERIFY PAYMENT (MAIN LOGIC) ================= */
+app.post('/api/verify-payment', async (req, res) => {
+  try {
+    const {
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature,
+      eventTitle,
+      name,
+      email,
+      formData
+    } = req.body;
+
+    const body = razorpay_order_id + "|" + razorpay_payment_id;
+
+    const expectedSignature = crypto
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+      .update(body)
+      .digest('hex');
+
+    if (expectedSignature !== razorpay_signature) {
+      return res.status(400).json({ success: false, message: 'Invalid payment' });
+    }
+
+    const db = getDb();
+
+    // 🔒 idempotency
+    const existing = await db.collection('tickets')
+      .findOne({ payment_id: razorpay_payment_id });
+
+    if (existing) {
+      return res.json({ success: true, ticketId: existing._id });
+    }
+
+    const ticketId = `TICKET-${Date.now()}`;
+
+    await db.collection('tickets').insertOne({
+      _id: ticketId,
+      event: eventTitle,
+      primary_name: name,
+      email,
+      formData: formData || {},
+      payment_id: razorpay_payment_id,
+      status_day_1: 'pending',
+      status_day_2: 'pending',
+      createdAt: new Date()
+    });
+
+    await sendTicketEmail({
+      id: ticketId,
+      event: eventTitle,
+      primary_name: name,
+      email
+    });
+
+    res.json({ success: true, ticketId });
+
+  } catch (err) {
+    console.error('Verify error:', err);
+    res.status(500).json({ success: false });
+  }
+});
+
+/* ================= START SERVER ================= */
 connectToDatabase().then(() => {
   app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
