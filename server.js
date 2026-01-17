@@ -43,6 +43,35 @@ app.use(session({
   }
 }));
 
+/* ================= ADMIN AUTH ================= */
+app.get('/api/auth/me', (req, res) => {
+  if (req.session && req.session.user) {
+    return res.json({ authenticated: true, user: req.session.user });
+  }
+  res.status(401).json({ authenticated: false });
+});
+
+app.post('/api/login', (req, res) => {
+  const { username, password } = req.body;
+
+  if (
+    username === process.env.ADMIN_USERNAME &&
+    password === process.env.ADMIN_PASSWORD
+  ) {
+    req.session.user = { id: 'admin', role: 'admin' };
+    return res.json({ success: true, user: req.session.user });
+  }
+
+  res.status(401).json({ success: false, message: 'Invalid credentials' });
+});
+
+app.post('/api/logout', (req, res) => {
+  req.session.destroy(() => {
+    res.clearCookie('connect.sid');
+    res.json({ success: true });
+  });
+});
+
 /* ================= EVENTS ================= */
 app.get('/api/events', async (req, res) => {
   try {
