@@ -43,6 +43,15 @@ app.use(session({
   }
 }));
 
+const requireAdminLogin = (req, res, next) => {
+  if (req.session && req.session.user && req.session.user.role === 'admin') {
+    return next();
+  }
+  return res.status(401).json({ success: false, message: 'Unauthorized' });
+};
+
+
+
 /* ================= ADMIN AUTH ================= */
 app.get('/api/auth/me', (req, res) => {
   if (req.session && req.session.user) {
@@ -87,6 +96,23 @@ app.get('/events', async (req, res) => {
     const events = await getDb().collection('events').find({}).toArray();
     res.json({ success: true, events });
   } catch {
+    res.status(500).json({ success: false });
+  }
+});
+
+/* ================= REGISTRATIONS (ADMIN) ================= */
+app.get('/api/registrations', requireAdminLogin, async (req, res) => {
+  try {
+    const db = getDb();
+    const tickets = await db
+      .collection('tickets')
+      .find({})
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.json({ success: true, data: tickets });
+  } catch (err) {
+    console.error('Registrations error:', err);
     res.status(500).json({ success: false });
   }
 });
