@@ -50,8 +50,6 @@ const requireAdminLogin = (req, res, next) => {
   return res.status(401).json({ success: false, message: 'Unauthorized' });
 };
 
-
-
 /* ================= ADMIN AUTH ================= */
 app.get('/api/auth/me', (req, res) => {
   if (req.session && req.session.user) {
@@ -103,8 +101,7 @@ app.get('/events', async (req, res) => {
 /* ================= REGISTRATIONS (ADMIN) ================= */
 app.get('/api/registrations', requireAdminLogin, async (req, res) => {
   try {
-    const db = getDb();
-    const tickets = await db
+    const tickets = await getDb()
       .collection('tickets')
       .find({})
       .sort({ createdAt: -1 })
@@ -130,10 +127,10 @@ app.post('/api/create-order', async (req, res) => {
       notes: { name, email, eventTitle }
     });
 
-    res.json({ success: true, order });
+    return res.json({ success: true, order });
   } catch (err) {
     console.error('Order error:', err);
-    res.status(500).json({ success: false });
+    return res.status(500).json({ success: false });
   }
 });
 
@@ -157,7 +154,9 @@ app.post('/api/verify-payment', async (req, res) => {
       .digest('hex');
 
     if (expectedSignature !== razorpay_signature) {
-      return res.status(400).json({ success: false });
+      return res
+        .status(400)
+        .json({ success: false, message: 'Invalid signature' });
     }
 
     const db = getDb();
@@ -167,7 +166,10 @@ app.post('/api/verify-payment', async (req, res) => {
       .findOne({ payment_id: razorpay_payment_id });
 
     if (alreadyExists) {
-      return res.json({ success: true, ticketId: alreadyExists._id });
+      return res.json({
+        success: true,
+        ticketId: alreadyExists._id
+      });
     }
 
     const ticketId = `TICKET-${Date.now()}`;
@@ -177,24 +179,31 @@ app.post('/api/verify-payment', async (req, res) => {
       event: eventTitle,
       primary_name: name,
       email,
-      formData,
+      formData: formData || {},
       payment_id: razorpay_payment_id,
       status_day_1: 'pending',
       status_day_2: 'pending',
       createdAt: new Date()
     });
 
-    await sendTicketEmail({
+    // 🚀 EMAIL SENT ASYNC (NON-BLOCKING)
+    sendTicketEmail({
       id: ticketId,
       event: eventTitle,
       primary_name: name,
       email
-    });
+    }).catch(err => console.error('Email error:', err));
 
-    res.json({ success: true, ticketId });
+    return res.json({ success: true, ticketId });
+
   } catch (err) {
     console.error('Verify error:', err);
-    res.status(500).json({ success: false });
+
+    if (!res.headersSent) {
+      return res
+        .status(500)
+        .json({ success: false, message: 'Verification failed' });
+    }
   }
 });
 
