@@ -36,6 +36,7 @@ app.post(
   express.raw({ type: 'application/json' }),
   async (req, res) => {
     try {
+      console.log('🔥 Razorpay webhook HIT');
       const signature = req.headers['x-razorpay-signature'];
 
       const expectedSignature = crypto
@@ -47,11 +48,14 @@ app.post(
         console.error('❌ Invalid webhook signature');
         return res.status(400).send('Invalid signature');
       }
-
+      console.log('✅ Razorpay webhook signature verified');
+      
       const payload = JSON.parse(req.body.toString());
-
+        console.log('📦 Webhook event:', payload.event);
+      
       if (payload.event === 'payment.captured') {
         const payment = payload.payload.payment.entity;
+         console.log('💰 Payment captured:', payment.id);
         const db = getDb();
 
         const exists = await db
