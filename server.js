@@ -17,7 +17,7 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET,
 });
 
-/* ================= MIDDLEWARE ================= */
+/* ================= CORS ================= */
 app.use(cors({
   origin: [
     'http://localhost:8080',
@@ -28,8 +28,70 @@ app.use(cors({
   credentials: true
 }));
 
+/* =====================================================
+   🔥 RAZORPAY WEBHOOK (MUST BE BEFORE express.json)
+   ===================================================== */
+app.post(
+  '/api/razorpay-webhook',
+  express.raw({ type: 'application/json' }),
+  async (req, res) => {
+    try {
+      const signature = req.headers['x-razorpay-signature'];
+
+      const expectedSignature = crypto
+        .createHmac('sha256', process.env.RAZORPAY_WEBHOOK_SECRET)
+        .update(req.body)
+        .digest('hex');
+
+      if (signature !== expectedSignature) {
+        console.error('❌ Invalid webhook signature');
+        return res.status(400).send('Invalid signature');
+      }
+
+      const payload = JSON.parse(req.body.toString());
+
+      if (payload.event === 'payment.captured') {
+        const payment = payload.payload.payment.entity;
+        const db = getDb();
+
+        const exists = await db
+          .collection('tickets')
+          .findOne({ payment_id: payment.id });
+
+        if (!exists) {
+          const ticketId = `TICKET-${Date.now()}`;
+
+          await db.collection('tickets').insertOne({
+            _id: ticketId,
+            event: payment.notes?.eventTitle || 'Unknown Event',
+            primary_name: payment.notes?.name || 'Guest',
+            email: payment.notes?.email,
+            payment_id: payment.id,
+            formData: {},
+            createdAt: new Date(),
+          });
+
+          sendTicketEmail({
+            id: ticketId,
+            event: payment.notes?.eventTitle || 'Event',
+            primary_name: payment.notes?.name || 'Guest',
+            email: payment.notes?.email,
+          }).catch(err => console.error('Email error:', err));
+        }
+      }
+
+      return res.json({ status: 'ok' });
+    } catch (err) {
+      console.error('Webhook error:', err);
+      return res.status(500).send('Webhook error');
+    }
+  }
+);
+
+/* ================= JSON PARSER (AFTER WEBHOOK) ================= */
 app.use(express.json());
 
+/* ================= SESSION ================= */
 app.set('trust proxy', 1);
 app.use(session({
   secret: process.env.SESSION_SECRET || 'sambhav-session-secret',
@@ -89,15 +151,6 @@ app.get('/api/events', async (req, res) => {
   }
 });
 
-app.get('/events', async (req, res) => {
-  try {
-    const events = await getDb().collection('events').find({}).toArray();
-    res.json({ success: true, events });
-  } catch {
-    res.status(500).json({ success: false });
-  }
-});
-
 /* ================= REGISTRATIONS (ADMIN) ================= */
 app.get('/api/registrations', requireAdminLogin, async (req, res) => {
   try {
@@ -134,7 +187,7 @@ app.post('/api/create-order', async (req, res) => {
   }
 });
 
-/* ================= VERIFY PAYMENT ================= */
+/* ================= VERIFY PAYMENT (FRONTEND) ================= */
 app.post('/api/verify-payment', async (req, res) => {
   try {
     const {
@@ -154,9 +207,7 @@ app.post('/api/verify-payment', async (req, res) => {
       .digest('hex');
 
     if (expectedSignature !== razorpay_signature) {
-      return res
-        .status(400)
-        .json({ success: false, message: 'Invalid signature' });
+      return res.status(400).json({ success: false, message: 'Invalid signature' });
     }
 
     const db = getDb();
@@ -166,10 +217,7 @@ app.post('/api/verify-payment', async (req, res) => {
       .findOne({ payment_id: razorpay_payment_id });
 
     if (alreadyExists) {
-      return res.json({
-        success: true,
-        ticketId: alreadyExists._id
-      });
+      return res.json({ success: true, ticketId: alreadyExists._id });
     }
 
     const ticketId = `TICKET-${Date.now()}`;
@@ -186,7 +234,6 @@ app.post('/api/verify-payment', async (req, res) => {
       createdAt: new Date()
     });
 
-    // 🚀 EMAIL SENT ASYNC (NON-BLOCKING)
     sendTicketEmail({
       id: ticketId,
       event: eventTitle,
@@ -198,12 +245,7 @@ app.post('/api/verify-payment', async (req, res) => {
 
   } catch (err) {
     console.error('Verify error:', err);
-
-    if (!res.headersSent) {
-      return res
-        .status(500)
-        .json({ success: false, message: 'Verification failed' });
-    }
+    return res.status(500).json({ success: false });
   }
 });
 
