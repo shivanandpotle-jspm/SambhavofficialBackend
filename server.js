@@ -191,6 +191,34 @@ app.post('/api/create-order', async (req, res) => {
   }
 });
 
+/* ================= PRE-REGISTER (SAVE FORM DATA BEFORE PAYMENT) ================= */
+app.post('/api/pre-register', async (req, res) => {
+  try {
+    const { eventTitle, name, email, formData } = req.body;
+
+    if (!email || !eventTitle) {
+      return res.status(400).json({ success: false });
+    }
+
+    const db = getDb();
+
+    await db.collection('pre_registrations').insertOne({
+      event: eventTitle,
+      primary_name: name,
+      email,
+      formData,
+      status: 'pending_payment',
+      createdAt: new Date(),
+    });
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('Pre-register error:', err);
+    return res.status(500).json({ success: false });
+  }
+});
+
+
 /* ================= VERIFY PAYMENT (FRONTEND) ================= */
 app.post('/api/verify-payment', async (req, res) => {
   try {
