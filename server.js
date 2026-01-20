@@ -65,15 +65,30 @@ app.post(
         if (!exists) {
           const ticketId = `TICKET-${Date.now()}`;
 
-          await db.collection('tickets').insertOne({
-            _id: ticketId,
-            event: payment.notes?.eventTitle || 'Unknown Event',
-            primary_name: payment.notes?.name || 'Guest',
-            email: payment.notes?.email,
-            payment_id: payment.id,
-            formData: {},
-            createdAt: new Date(),
-          });
+const preReg = await db.collection('pre_registrations').findOne({
+  email: payment.notes?.email,
+  event: payment.notes?.eventTitle,
+  status: 'pending_payment',
+});
+
+await db.collection('tickets').insertOne({
+  _id: ticketId,
+  event: payment.notes?.eventTitle || 'Unknown Event',
+  primary_name: payment.notes?.name || 'Guest',
+  email: payment.notes?.email,
+  payment_id: payment.id,
+  formData: preReg?.formData || {},
+  createdAt: new Date(),
+});
+
+// optional but recommended cleanup
+if (preReg) {
+  await db.collection('pre_registrations').updateOne(
+    { _id: preReg._id },
+    { $set: { status: 'completed' } }
+  );
+}
+
 
           sendTicketEmail({
             id: ticketId,
